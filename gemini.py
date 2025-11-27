@@ -285,7 +285,7 @@ def modify_code(message, question, game_name):
     if game_data and game_data != '':    
         error = validate_json(game_data)
         json_data = json.loads(game_data)
-        check_and_create_images_with_text(json_data, GAME_DIR(game_name))
+        check_and_create_images_with_text(json_data, GAME_DIR(game_name), theme_context=message)
         copy_and_rename_sound_files(json_data, GAME_DIR(game_name))
         directory_path = os.path.dirname(DATA_PATH(game_name)) 
         if directory_path: os.makedirs(directory_path, exist_ok=True)
