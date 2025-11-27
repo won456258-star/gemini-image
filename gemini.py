@@ -522,7 +522,7 @@ async def generate_image_api(
     1. Gemini(Vision)로 이미지를 분석 (gemini-1.5-flash)
     2. 분석된 내용을 바탕으로 Azure DALL-E 3가 이미지를 생성
     """
-    vision_model_name = "gemini-1.5-flash" 
+    vision_model_name = "gemini-2.5-flash" 
 
     try:
         image_data = await image.read()

@@ -1,10 +1,9 @@
-import base64
-import os
+import urllib.parse
+import urllib.request
 from io import BytesIO
 from google import genai
 from google.genai import types
 from PIL import Image
-from openai import AzureOpenAI
 
 def pil_image_to_bytes(pil_img: Image.Image, format="PNG") -> bytes:
     buffered = BytesIO()
@@ -17,18 +16,20 @@ def nano_banana_style_image_editing(
     reference_image: Image.Image, 
     editing_prompt: str
 ) -> bytes:
-    print(f"\n========== [이미지 생성 시작] ==========")
+    print(f"\n========== [이미지 생성 시작 (무료 모드)] ==========")
     print(f"1. 사용자 요청: {editing_prompt}")
     
     try:
-        # 1. Gemini 분석
-        print("2. [Gemini] 이미지 분석 중... (잠시만 기다려주세요)")
+        # 1. Gemini 분석 (이미지 -> 텍스트 프롬프트)
+        # 구글 Gemini가 그림을 어떻게 그릴지 아주 자세한 묘사를 써줍니다.
+        print(f"2. [Gemini] 이미지 분석 및 프롬프트 작성 중... (모델: {model_name})")
         input_image_bytes = pil_image_to_bytes(reference_image)
         
         analyze_prompt = f"""
-        You are an expert DALL-E prompt engineer.
+        You are an expert prompt engineer. 
         User request: "{editing_prompt}"
-        Based on the attached image and the user's request, write a detailed English prompt for DALL-E 3.
+        Based on the attached image and user's request, write a detailed English prompt for image generation.
+        Focus on style, colors, and mood.
         Output ONLY the prompt text.
         """
         
@@ -38,43 +39,36 @@ def nano_banana_style_image_editing(
         )
         
         generated_prompt = analyze_response.text.strip()
-        print(f"   ✅ [Gemini] 프롬프트 생성 완료:\n   --> \"{generated_prompt}\"")
+        print(f"   ✅ [Gemini] 프롬프트 생성 완료:\n   --> \"{generated_prompt[:100]}...\"")
 
-        # 2. Azure DALL-E 생성
-        print("\n3. [Azure DALL-E] 이미지 생성 요청 중...")
+        # 2. 무료 이미지 생성 (Pollinations AI 사용)
+        # 결제 카드 없이 사용할 수 있는 공개 AI 서비스를 이용합니다.
+        print(f"\n3. [Pollinations AI] 이미지 생성 요청 중...")
         
-        azure_api_key = os.getenv("AZURE_OAI_DALLE_API_KEY")
-        azure_endpoint = os.getenv("AZURE_OPENAI_ENDPOINT")
+        # 프롬프트를 URL 주소 형식으로 변환
+        encoded_prompt = urllib.parse.quote(generated_prompt)
+        # 무료 생성 주소 호출 (랜덤 시드 추가로 매번 다른 그림 생성)
+        import random
+        seed = random.randint(0, 10000)
+        image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&width=1024&height=1024&nologo=true"
         
-        # 키 확인용 (앞 5자리만 출력)
-        if azure_api_key:
-            print(f"   ℹ️ Azure Key 확인: {azure_api_key[:5]}... (설정됨)")
-        else:
-            print("   ❌ 오류: AZURE_OAI_DALLE_API_KEY가 설정되지 않았습니다!")
-            return None
-
-        azure_client = AzureOpenAI(
-            api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
-            azure_endpoint=azure_endpoint,
-            api_key=azure_api_key,
+        # 이미지 다운로드 (파이썬 기본 라이브러리 사용)
+        req = urllib.request.Request(
+            image_url, 
+            headers={'User-Agent': 'Mozilla/5.0'} # 웹브라우저인 척 요청
         )
-
-        result = azure_client.images.generate(
-            model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME", "dall-e-3"),
-            prompt=generated_prompt,
-            n=1,
-            size="1024x1024",
-            response_format="b64_json"
-        )
-
-        if result.data:
-            print("   ✅ [Azure DALL-E] 이미지 생성 성공!")
+        
+        with urllib.request.urlopen(req) as response:
+            image_data = response.read()
+            
+        if image_data:
+            print("   ✅ [Pollinations AI] 이미지 생성 성공!")
             print("========== [작업 완료] ==========\n")
-            return base64.b64decode(result.data[0].b64_json)
+            return image_data
         else:
-            print("   ❌ [Azure DALL-E] 응답은 받았으나 이미지가 없습니다.")
+            print("   ❌ 응답은 받았으나 데이터가 비어있습니다.")
             return None
 
     except Exception as e:
-        print(f"\n❌ [치명적 오류 발생]: {e}")
+        print(f"\n❌ [오류 발생]: {e}")
         return None
