@@ -1,0 +1,43 @@
+# FastAPI and web server dependencies
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Google Gemini AI
+google-genai
+
+# Environment variables
+python-dotenv
+
+# Data validation
+pydantic
+
+# Image processing
+Pillow
+
+# Video processing
+ffmpeg-python
+
+# Real-time communication
+realtime
+
+# Google Cloud (optional - for vertext_test.py)
+# google-auth
+# google-cloud-aiplatform
+
+# Database (commented out - currently not in use)
+# supabase
+
+# Background Removal
+rembg
+onnxruntime
+
+fastapi
+uvicorn[standard]
+python-multipart
+python-dotenv
+google-genai
+Pillow
+rembg
+onnxruntime
+openai  # 추가: Azure OpenAI 클라이언트용
