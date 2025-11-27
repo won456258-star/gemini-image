@@ -6,6 +6,7 @@ import subprocess
 import tempfile
 import io 
 import os
+import time
 from dotenv import load_dotenv
 
 # --- 추가된 라이브러리 ---
@@ -33,7 +34,22 @@ from snapshot_manager import create_version, find_current_version_from_file, res
 from tools.debug_print import debug_print
 from tsc import check_typescript_compile_error
 
-# FastAPI 앱 인스턴스 생성
+# 환경 변수 로드
+load_dotenv()
+
+# [Gemini 설정] 채팅 및 이미지 분석용
+gemini_api_key = os.getenv('GEMINI_API_KEY')
+model_name = "gemini-2.5-flash"  # 채팅/코드 수정용 모델
+
+# Gemini 클라이언트 초기화
+try:
+    gemini_client = genai.Client(api_key=gemini_api_key)
+except Exception as e:
+    print(f"클라이언트 초기화 오류: {e}")
+    print("환경 변수 GEMINI_API_KEY가 설정되었는지 확인해 주세요.")
+    exit()
+
+# FastAPI 앱 인스턴스 생성 (이 줄이 반드시 @app 보다 위에 있어야 합니다!)
 app = FastAPI(title="Gemini Code Assistant API")
 
 # ⚠️ CORS 설정
@@ -50,21 +66,6 @@ app.add_middleware(
     allow_headers=["*"], 
 )
 
-# 환경 변수 로드
-load_dotenv()
-
-# [Gemini 설정] 채팅 및 이미지 분석용
-gemini_api_key = os.getenv('GEMINI_API_KEY')
-model_name = "gemini-2.5-flash"  # 채팅/코드 수정용 모델
-
-# Gemini 클라이언트 초기화
-try:
-    gemini_client = genai.Client(api_key=gemini_api_key)
-except Exception as e:
-    print(f"클라이언트 초기화 오류: {e}")
-    print("환경 변수 GEMINI_API_KEY가 설정되었는지 확인해 주세요.")
-    exit()
-
 # 요청 모델 정의
 class CodeRequest(BaseModel):
     message: str
@@ -76,7 +77,7 @@ async def root():
     return {"status": "healthy", "message": "Gemini Code Assistant API is running"}
 
 # -------------------------------------------------------------------------
-#  [기존 유틸리티 함수들] - 코드 수정/파싱 등 (그대로 유지)
+#  [유틸리티 함수들]
 # -------------------------------------------------------------------------
 
 def remove_comments_from_file(file_path):
@@ -163,7 +164,49 @@ sqtp = SpecQuestionTemplateProcessor()
 atp = AnswerTemplateProcessor()
 
 # -------------------------------------------------------------------------
-#  [기존 API 엔드포인트들] - 채팅, 코드 수정 등 (그대로 유지)
+#  [공통 로직] 에셋 재생성 함수 (채팅/API 공용)
+# -------------------------------------------------------------------------
+GAMES_ROOT_DIR = BASE_PUBLIC_DIR.resolve() 
+
+def _regenerate_asset_logic(game_name: str, asset_name: str, prompt: str):
+    print(f"\n🎨 [AI 에셋 재생성 시작] 게임: {game_name}, 파일: {asset_name}")
+    print(f"   요청 프롬프트: {prompt}")
+
+    assets_dir = GAMES_ROOT_DIR / game_name / "assets"
+    file_path = assets_dir / asset_name
+
+    # 1. 파일 존재 여부 확인
+    if not file_path.exists():
+        return False, f"❌ 오류: '{asset_name}' 파일을 assets 폴더에서 찾을 수 없습니다."
+
+    try:
+        # 2. 원본 이미지 읽기
+        ref_image = Image.open(file_path).convert("RGB")
+
+        # 3. AI 이미지 생성 (genai_image.py 사용)
+        # model_name은 전역 변수로 설정된 것 사용
+        new_image_bytes = nano_banana_style_image_editing(
+            gemini_client=gemini_client,
+            model_name=model_name, 
+            reference_image=ref_image,
+            editing_prompt=prompt
+        )
+
+        if not new_image_bytes:
+            return False, "❌ 이미지 생성에 실패했습니다 (AI 응답 없음)."
+
+        # 4. 파일 덮어쓰기
+        with open(file_path, "wb") as f:
+            f.write(new_image_bytes)
+            
+        return True, f"✅ '{asset_name}' 이미지를 '{prompt}' 스타일로 새로 그렸습니다!\n(변경사항을 보려면 에셋 탭을 새로고침 하거나 게임을 다시 시작하세요.)"
+
+    except Exception as e:
+        print(f"에러 상세: {e}")
+        return False, f"❌ 에러 발생: {str(e)}"
+
+# -------------------------------------------------------------------------
+#  [API 엔드포인트들]
 # -------------------------------------------------------------------------
 
 def modify_code(message, question, game_name):
@@ -271,6 +314,30 @@ async def category(request: CodeRequest):
 @app.post("/process-code")
 async def process_code(request: CodeRequest):
     game_name = request.game_name
+    message = request.message
+    
+    # 🌟 [추가 기능] 채팅으로 이미지 변경 요청 감지 🌟
+    asset_match = re.search(r'([\w-]+\.png)', message)
+    keyword_match = re.search(r'(그려|바꿔|생성|만들어|수정)', message)
+
+    if asset_match and keyword_match:
+        asset_name = asset_match.group(1)
+        # 프롬프트 추출: 파일명과 '그려줘' 등을 제외한 나머지 문장
+        prompt = message.replace(asset_name, "").replace("줘", "").strip()
+        
+        # AI 이미지 생성 실행
+        success, reply_msg = _regenerate_asset_logic(game_name, asset_name, prompt)
+        
+        # 결과 채팅창에 전송
+        save_chat(CHAT_PATH(game_name), "user", message)
+        save_chat(CHAT_PATH(game_name), "bot", reply_msg)
+        
+        if success:
+            return {"status": "success", "reply": reply_msg}
+        else:
+            return {"status": "fail", "reply": reply_msg}
+
+    # --- [기존 로직 유지] ---
     prompt = pdp.get_final_prompt(request.message)
     
     success = False
@@ -507,19 +574,13 @@ async def revert_code(request: RevertRequest):
     else:
         return {"status": "success", "reply": "되돌릴 내역 없음"}
 
-# -------------------------------------------------------------------------
-#  [신규 기능] 이미지 생성(Azure DALL-E) 및 배경 제거(rembg) API
-# -------------------------------------------------------------------------
-
-GAMES_ROOT_DIR = BASE_PUBLIC_DIR.resolve() 
-
 @app.post("/generate-image")
 async def generate_image_api(
     prompt: str = Form(...),
     image: UploadFile = File(...)
 ):
     """
-    1. Gemini(Vision)로 이미지를 분석 (gemini-1.5-flash)
+    1. Gemini(Vision)로 이미지를 분석 (gemini-2.5-flash)
     2. 분석된 내용을 바탕으로 Azure DALL-E 3가 이미지를 생성
     """
     vision_model_name = "gemini-2.5-flash" 
@@ -640,6 +701,23 @@ async def replace_asset(
         except: pass
                  
     return JSONResponse({"status": "success", "url": f"/static/{game_name}/assets/{new_name}"})
+
+@app.post("/regenerate-asset")
+async def regenerate_asset_api(
+    game_name: str = Form(...),
+    asset_name: str = Form(...),
+    prompt: str = Form(...)
+):
+    success, message = _regenerate_asset_logic(game_name, asset_name, prompt)
+    
+    if success:
+        # 브라우저 캐시 방지를 위해 타임스탬프 추가
+        return JSONResponse({
+            "status": "success", 
+            "url": f"/static/{game_name}/assets/{asset_name}?t={int(time.time())}"
+        })
+    else:
+        raise HTTPException(status_code=500, detail=message)
 
 if __name__ == "__main__":
     import uvicorn
