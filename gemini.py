@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from PIL import Image
-from rembg import remove # 배경 제거
+from rembg import remove # 배경 제거 라이브러리
 from genai_image import nano_banana_style_image_editing # 이미지 생성 함수
 from realtime import List
 import ffmpeg
@@ -49,7 +49,7 @@ except Exception as e:
     print("환경 변수 GEMINI_API_KEY가 설정되었는지 확인해 주세요.")
     exit()
 
-# FastAPI 앱 인스턴스 생성 (이 줄이 반드시 @app 보다 위에 있어야 합니다!)
+# FastAPI 앱 인스턴스 생성
 app = FastAPI(title="Gemini Code Assistant API")
 
 # ⚠️ CORS 설정
@@ -164,7 +164,7 @@ sqtp = SpecQuestionTemplateProcessor()
 atp = AnswerTemplateProcessor()
 
 # -------------------------------------------------------------------------
-#  [공통 로직] 에셋 재생성 함수 (채팅/API 공용)
+#  [공통 로직] 에셋 재생성 함수 (배경 제거 기능 추가됨)
 # -------------------------------------------------------------------------
 GAMES_ROOT_DIR = BASE_PUBLIC_DIR.resolve() 
 
@@ -184,7 +184,6 @@ def _regenerate_asset_logic(game_name: str, asset_name: str, prompt: str):
         ref_image = Image.open(file_path).convert("RGB")
 
         # 3. AI 이미지 생성 (genai_image.py 사용)
-        # model_name은 전역 변수로 설정된 것 사용
         new_image_bytes = nano_banana_style_image_editing(
             gemini_client=gemini_client,
             model_name=model_name, 
@@ -195,11 +194,23 @@ def _regenerate_asset_logic(game_name: str, asset_name: str, prompt: str):
         if not new_image_bytes:
             return False, "❌ 이미지 생성에 실패했습니다 (AI 응답 없음)."
 
-        # 4. 파일 덮어쓰기
+        # 🔥 4. 배경 제거 로직 (자동 감지)
+        # 파일명에 'background'나 'bg'가 들어있지 않으면 캐릭터/아이템으로 간주하고 배경 제거
+        lower_name = asset_name.lower()
+        if "background" not in lower_name and "bg" not in lower_name:
+            print(f"   ✂️ [자동 배경 제거] '{asset_name}'의 배경을 투명하게 만듭니다...")
+            try:
+                # rembg 라이브러리로 배경 제거
+                new_image_bytes = remove(new_image_bytes)
+                print("      -> 배경 제거 성공!")
+            except Exception as e:
+                print(f"      ⚠️ 배경 제거 실패 (원본 그대로 저장): {e}")
+
+        # 5. 파일 덮어쓰기
         with open(file_path, "wb") as f:
             f.write(new_image_bytes)
-            
-        return True, f"✅ '{asset_name}' 이미지를 '{prompt}' 스타일로 새로 그렸습니다!\n(변경사항을 보려면 에셋 탭을 새로고침 하거나 게임을 다시 시작하세요.)"
+
+        return True, f"✅ '{asset_name}' 재생성 완료! (배경 제거 적용됨)"
 
     except Exception as e:
         print(f"에러 상세: {e}")
@@ -316,16 +327,16 @@ async def process_code(request: CodeRequest):
     game_name = request.game_name
     message = request.message
     
-    # 🌟 [추가 기능] 채팅으로 이미지 변경 요청 감지 🌟
+    # 🌟 [채팅으로 이미지 변경 요청 감지] 🌟
     asset_match = re.search(r'([\w-]+\.png)', message)
     keyword_match = re.search(r'(그려|바꿔|생성|만들어|수정)', message)
 
     if asset_match and keyword_match:
         asset_name = asset_match.group(1)
-        # 프롬프트 추출: 파일명과 '그려줘' 등을 제외한 나머지 문장
+        # 프롬프트 추출
         prompt = message.replace(asset_name, "").replace("줘", "").strip()
         
-        # AI 이미지 생성 실행
+        # AI 이미지 생성 실행 (배경 제거 포함)
         success, reply_msg = _regenerate_asset_logic(game_name, asset_name, prompt)
         
         # 결과 채팅창에 전송
