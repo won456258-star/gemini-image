@@ -18,7 +18,7 @@ def nano_banana_style_image_editing(
     reference_image: Image.Image, 
     editing_prompt: str
 ) -> bytes:
-    print(f"\n========== [이미지 생성 시작 (안정성 모드)] ==========")
+    print(f"\n========== [이미지 생성 시작 (고속 안정성 모드)] ==========")
     print(f"1. 사용자 요청: {editing_prompt}")
     
     try:
@@ -41,32 +41,40 @@ def nano_banana_style_image_editing(
         )
         
         generated_prompt = analyze_response.text.strip()
-        
-        # 🌟 [안정성 패치 1] 프롬프트가 너무 길면 자르기 (URL 길이 제한 방지)
         if len(generated_prompt) > 800:
             generated_prompt = generated_prompt[:800]
             
         print(f"   ✅ [Gemini] 프롬프트 생성 완료 ({len(generated_prompt)}자)")
 
-        # 2. 무료 이미지 생성 (Pollinations AI) - 재시도 로직 추가
-        print(f"\n3. [Pollinations AI] 이미지 생성 요청 중... (최대 3회 시도)")
+        # 2. 무료 이미지 생성 (Pollinations AI)
+        print(f"\n3. [Pollinations AI] 이미지 생성 요청 중...")
         
         encoded_prompt = urllib.parse.quote(generated_prompt)
         
-        # 🌟 [안정성 패치 2] 3번까지 재시도하는 로직
-        for attempt in range(1, 4):
+        # 🌟 [최적화] 성공률을 높이기 위해 기본 크기를 512x512로 설정
+        # (게임 에셋으로는 이 정도도 충분히 고화질이며, 생성 속도가 훨씬 빠릅니다)
+        target_width = 512
+        target_height = 512
+        
+        # 최대 4번 재시도
+        for attempt in range(1, 5):
             try:
                 seed = random.randint(0, 100000)
-                # nologo=true: 로고 제거, private=true: 비공개(선택)
-                image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&width=1024&height=1024&nologo=true"
+                # 시도 횟수가 늘어나면 크기를 더 줄여서라도 성공시키기
+                if attempt > 2:
+                    target_width = 256
+                    target_height = 256
+                    print(f"   ⚠️ (속도 향상을 위해 해상도를 {target_width}x{target_height}로 조정합니다)")
+
+                image_url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?seed={seed}&width={target_width}&height={target_height}&nologo=true"
                 
                 req = urllib.request.Request(
                     image_url, 
-                    headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+                    headers={'User-Agent': 'Mozilla/5.0'}
                 )
                 
-                # 타임아웃을 30초로 넉넉하게 설정
-                with urllib.request.urlopen(req, timeout=30) as response:
+                # 🔥 [핵심] 타임아웃을 5분(300초)으로 설정하여 웬만해선 끊기지 않게 함
+                with urllib.request.urlopen(req, timeout=300) as response:
                     image_data = response.read()
                 
                 if image_data:
@@ -76,11 +84,12 @@ def nano_banana_style_image_editing(
             
             except Exception as e:
                 print(f"   ⚠️ 시도 {attempt} 실패: {e}")
-                if attempt < 3:
-                    print("   ⏳ 2초 후 다시 시도합니다...")
-                    time.sleep(2)
+                if attempt < 4:
+                    wait_time = attempt * 2 # 2초, 4초, 6초... 점진적 대기
+                    print(f"   ⏳ {wait_time}초 후 다시 시도합니다...")
+                    time.sleep(wait_time)
                 else:
-                    print("   ❌ 모든 시도 실패.")
+                    print("   ❌ 모든 시도 실패. (서버가 매우 혼잡합니다)")
                     return None
 
     except Exception as e:
