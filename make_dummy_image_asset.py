@@ -4,6 +4,8 @@ import urllib.request
 import random
 import time
 from PIL import Image, ImageDraw, ImageFont
+import shutil # shutil 추가 (clean-up 시 필요할 수 있음)
+from io import BytesIO # BytesIO 추가
 
 # rembg(배경 제거) 라이브러리 확인
 try:
@@ -11,12 +13,15 @@ try:
     REMBG_AVAILABLE = True
 except ImportError:
     print("⚠️ 'rembg' 라이브러리가 설치되지 않았습니다. 배경 제거 기능이 비활성화됩니다.")
+    print("   설치 명령어: pip install rembg")
     REMBG_AVAILABLE = False
 
-def check_and_create_images_with_text(data, base_directory, theme_context=""):
+# 🔥 [수정된 함수 시그니처] is_force 파라미터를 받습니다.
+def check_and_create_images_with_text(data, base_directory, theme_context="", is_force=False):
     """
     JSON 데이터를 기반으로 이미지를 생성합니다.
-    theme_context: 사용자의 요청 내용 (예: "쿠키런 스타일로 만들어줘") -> 이것을 프롬프트에 반영합니다!
+    theme_context: 사용자의 요청 내용 (프롬프트 반영)
+    is_force: True일 경우 파일이 존재해도 덮어쓰기 (재생성)
     """
     images_to_process = data.get('assets', {}).get('images', [])
     
@@ -31,6 +36,8 @@ def check_and_create_images_with_text(data, base_directory, theme_context=""):
         print(f"📁 디렉토리 생성: {target_directory}")
 
     print(f"\n========== [🚀 에셋 AI 자동 생성 시작 (테마: {theme_context[:20]}...)] ==========")
+    if is_force:
+        print("🔥 [강제 재생성 모드] 기존 파일이 있어도 덮어씁니다!")
 
     for item in images_to_process:
         name = item.get('name', 'unknown')
@@ -41,8 +48,8 @@ def check_and_create_images_with_text(data, base_directory, theme_context=""):
         file_name = os.path.basename(file_path_full)
         final_save_path = os.path.join(target_directory, file_name)
 
-        # 1. 이미 파일이 있으면 건너뜀
-        if os.path.exists(final_save_path):
+        # 1. is_force가 False일 때만 파일 존재 여부 확인
+        if not is_force and os.path.exists(final_save_path):
             continue
         
         print(f"   🎨 AI 생성 시도: {file_name} ({name})...")
@@ -51,14 +58,11 @@ def check_and_create_images_with_text(data, base_directory, theme_context=""):
         image_data = None
 
         try:
-            # 🌟 [핵심 수정] 파일 이름 다듬기 & 테마 적용
-            # 예: cookie_run_1 -> cookie run 1
+            # 파일 이름 다듬기
             clean_name = name.replace("_", " ").replace("-", " ")
-            
             is_background = "background" in name.lower() or "bg" in name.lower()
             
-            # 🌟 [핵심 수정] 사용자의 요청(theme_context)을 프롬프트 맨 앞에 추가!
-            # 예: "Cookie Run style, cookie run 1, cartoon style..."
+            # 프롬프트 구성
             if theme_context:
                 base_prompt = f"{theme_context} style, {clean_name}"
             else:
@@ -71,7 +75,7 @@ def check_and_create_images_with_text(data, base_directory, theme_context=""):
 
             encoded_prompt = urllib.parse.quote(prompt)
             
-            # 재시도 로직
+            # 재시도 로직 (최대 3회)
             for attempt in range(1, 4):
                 try:
                     seed = random.randint(0, 100000)
@@ -82,6 +86,7 @@ def check_and_create_images_with_text(data, base_directory, theme_context=""):
                     
                     req = urllib.request.Request(image_url, headers={'User-Agent': 'Mozilla/5.0'})
                     
+                    # 타임아웃 60초
                     with urllib.request.urlopen(req, timeout=60) as response:
                         image_data = response.read()
                     
@@ -123,7 +128,6 @@ def create_dummy_image(path, width, height, text):
         except:
             font = None
         
-        # 텍스트 중앙 정렬 (간략화)
         draw.text((10, 10), text, fill=(255, 255, 255), font=font)
         img.save(path)
     except Exception as e:

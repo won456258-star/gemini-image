@@ -26,7 +26,7 @@ import ffmpeg
 # 기존 모듈 임포트 유지
 from base_dir import BASE_PUBLIC_DIR
 
-# 🌟 [중요] classes.py에서 필요한 도구들을 빠짐없이 가져옵니다.
+# 🌟 [수정됨] classes.py에서 필요한 도구들을 빠짐없이 가져옵니다.
 from classes import (
     PromptDeviderProcessor, 
     AnswerTemplateProcessor, 
@@ -60,9 +60,7 @@ except Exception as e:
     print("환경 변수 GEMINI_API_KEY가 설정되었는지 확인해 주세요.")
     exit()
 
-# -----------------------------------------------------------
-# 🚨 [매우 중요] 앱 인스턴스 생성 (이 줄이 없으면 실행 안 됨!)
-# -----------------------------------------------------------
+# FastAPI 앱 인스턴스 생성
 app = FastAPI(title="Gemini Code Assistant API")
 
 # ⚠️ CORS 설정
@@ -285,7 +283,36 @@ def modify_code(message, question, game_name):
     if game_data and game_data != '':    
         error = validate_json(game_data)
         json_data = json.loads(game_data)
-        check_and_create_images_with_text(json_data, GAME_DIR(game_name), theme_context=message)
+        
+        # 🌟 [핵심 수정] 사용자 메시지에서 '전체 재생성' 키워드 감지
+        regen_keywords = ["전부", "모든", "다시", "새로"]
+        should_force_regen = any(keyword in message for keyword in regen_keywords)
+        
+        if should_force_regen:
+            assets_path = GAME_DIR(game_name) / "assets"
+            
+            # 🔥 [수정] assets 폴더 내용 전체 삭제
+            if assets_path.exists():
+                print(f"🔥 [강제 삭제] 에셋 전체를 삭제하고 재생성합니다.")
+                try:
+                    for item in os.listdir(assets_path):
+                        item_path = os.path.join(assets_path, item)
+                        if os.path.isdir(item_path):
+                            shutil.rmtree(item_path)
+                        else:
+                            os.remove(item_path)
+                    print(f"   -> assets 폴더 내용 삭제 완료.")
+                except Exception as e:
+                    print(f"   ⚠️ assets 폴더 삭제 중 오류 발생: {e}")
+
+        # theme_context와 is_force 전달
+        check_and_create_images_with_text(
+            json_data, 
+            GAME_DIR(game_name), 
+            theme_context=message, 
+            is_force=should_force_regen
+        )
+        
         copy_and_rename_sound_files(json_data, GAME_DIR(game_name))
         directory_path = os.path.dirname(DATA_PATH(game_name)) 
         if directory_path: os.makedirs(directory_path, exist_ok=True)
@@ -350,25 +377,23 @@ async def process_code(request: CodeRequest):
     game_name = request.game_name
     message = request.message
     
-    # 🌟 [스타일 설정 기능 추가] 🌟
-    # 예: "스타일 설정: 8비트 레트로 느낌", "Set style: Cute cartoon"
+    # 🌟 [스타일 설정 기능]
     if message.startswith("스타일 설정:") or message.startswith("Set style:"):
         style_content = message.split(":", 1)[1].strip()
         style_path = GAMES_ROOT_DIR / game_name / STYLE_FILE_NAME
         
-        # 스타일 파일 저장
         if not style_path.parent.exists():
             style_path.parent.mkdir(parents=True, exist_ok=True)
             
         with open(style_path, 'w', encoding='utf-8') as f:
             f.write(style_content)
             
-        reply_msg = f"✅ 게임 스타일이 '{style_content}'(으)로 설정되었습니다!\n이제부터 생성되는 모든 에셋은 이 스타일을 따릅니다."
+        reply_msg = f"✅ 게임 스타일이 '{style_content}'(으)로 설정되었습니다!"
         save_chat(CHAT_PATH(game_name), "user", message)
         save_chat(CHAT_PATH(game_name), "bot", reply_msg)
         return {"status": "success", "reply": reply_msg}
 
-    # 🌟 [채팅으로 이미지 변경 요청 감지] 🌟
+    # 🌟 [단일 에셋 재생성 감지]
     asset_match = re.search(r'([\w-]+\.png)', message)
     keyword_match = re.search(r'(그려|바꿔|생성|만들어|수정)', message)
 
@@ -386,7 +411,7 @@ async def process_code(request: CodeRequest):
         else:
             return {"status": "fail", "reply": reply_msg}
 
-    # --- [기존 로직 유지] ---
+    # --- [기본: 코드/데이터 수정] ---
     prompt = pdp.get_final_prompt(request.message)
     
     success = False
@@ -460,12 +485,12 @@ async def process_code(request: CodeRequest):
                         success = True
                         break 
                     else:
-                        user_requests = error # 에러 발생 시 에러 내용을 다음 프롬프트로 사용
+                        user_requests = error 
                         description_total += f"\n\n========Compile Error========\n{error}\n=============================\n"
                 except Exception as e:     
                     print(f"❌ 에러 발생: {e}")
                 
-                user_question = "" # 에러 수정 시 질문은 제거
+                user_question = "" 
 
             if success:
                 if game_code != '' or game_data != '':
@@ -630,7 +655,7 @@ async def generate_image_api(
 ):
     """
     1. Gemini(Vision)로 이미지를 분석 (gemini-2.5-flash)
-    2. 분석된 내용을 바탕으로 Azure DALL-E 3가 이미지를 생성
+    2. 분석된 내용을 바탕으로 Pollinations AI가 이미지를 생성
     """
     vision_model_name = "gemini-2.5-flash" 
 
