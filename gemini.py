@@ -88,7 +88,6 @@ class RestoreRequest(BaseModel):
     version: str
     game_name: str
 
-# 🌟 [추가됨] 누락되었던 RevertRequest 클래스 추가
 class RevertRequest(BaseModel):
     game_name: str
 
@@ -411,12 +410,15 @@ async def process_code(request: CodeRequest):
         with open(style_path, 'w', encoding='utf-8') as f: f.write(style_content)
         return {"status": "success", "reply": f"✅ 스타일 설정 완료: {style_content}"}
 
-    # 스마트 에셋 변경 감지
+    # 🔥 스마트 에셋 변경 감지
     asset_match = re.search(r'([\w-]+\.png)', message)
-    change_keywords = ["바꿔", "변경", "그려", "수정", "change"]
+    change_keywords = ["바꿔", "변경", "그려", "수정", "change", "생성", "만들어"]
     is_change_request = any(k in message for k in change_keywords)
 
-    if is_change_request:
+    # 🚨 [수정] 코드 수정이나 전체 재생성 요청이 포함된 경우, 단일 에셋 변경 로직을 건너뜁니다.
+    is_global_request = any(k in message for k in ["코드", "로직", "전부", "모든", "싹 다", "초기화"])
+
+    if is_change_request and not is_global_request:
         asset_id, asset_filename = None, None
         
         if asset_match: 
@@ -437,7 +439,7 @@ async def process_code(request: CodeRequest):
             save_chat(CHAT_PATH(game_name), "bot", reply)
             return {"status": "success" if success else "fail", "reply": reply}
 
-    # 기본 코드 수정 로직
+    # 기본 코드 수정 로직 (단일 에셋 변경이 아니거나, 글로벌 요청인 경우 여기로 옴)
     prompt = pdp.get_final_prompt(request.message)
     success = False
     fail_message = ""
@@ -630,14 +632,17 @@ async def replace_asset(
 ):
     if not game_name.strip() or type not in ("image", "sound") or not _is_safe_filename(old_name):
         raise HTTPException(status_code=400, detail="Invalid request")
+
     assets_dir = (GAMES_ROOT_DIR / game_name / "assets")
     assets_dir.mkdir(parents=True, exist_ok=True)
     old_path = (assets_dir / old_name)
     new_name = f"{Path(old_name).stem}.{'png' if type == 'image' else 'mp3'}"
     dst_path = (assets_dir / new_name)
+
     with tempfile.NamedTemporaryFile(delete=False) as tmp:
         shutil.copyfileobj(file.file, tmp)
         tmp_path = Path(tmp.name)
+
     try:
         ext = Path(file.filename).suffix.lower()
         if type == "image":
@@ -649,14 +654,19 @@ async def replace_asset(
             if ext == ".mp3": shutil.copyfile(tmp_path, dst_path)
             else:
                 subprocess.run(["ffmpeg", "-y", "-i", str(tmp_path), "-b:a", "192k", str(dst_path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if old_path.exists() and old_path.resolve() != dst_path.resolve(): old_path.unlink(missing_ok=True)
+
+        if old_path.exists() and old_path.resolve() != dst_path.resolve():
+            old_path.unlink(missing_ok=True)
+        
         version_info = find_current_version_from_file(ARCHIVE_LOG_PATH(game_name))
         create_version(GAME_DIR(game_name), parent_name=version_info.get("version"), summary=f'{new_name} 교체')
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         try: tmp_path.unlink(missing_ok=True)
         except: pass
+                 
     return JSONResponse({"status": "success", "url": f"/static/{game_name}/assets/{new_name}"})
 
 @app.post("/regenerate-asset")
