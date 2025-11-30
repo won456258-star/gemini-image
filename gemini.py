@@ -77,7 +77,7 @@ app.add_middleware(
 )
 
 # -------------------------------------------------------------------------
-#  [데이터 모델 정의] - (사용하기 전에 먼저 정의되어야 함)
+#  [데이터 모델 정의]
 # -------------------------------------------------------------------------
 
 class CodeRequest(BaseModel):
@@ -227,12 +227,14 @@ async def find_best_matching_asset(message: str, game_name: str, gemini_client) 
     image_assets = game_data.get('assets', {}).get('images', [])
     if not image_assets: return None
 
+    # 1. 간단한 텍스트 매칭
     for idx, asset in enumerate(image_assets):
         filename = os.path.basename(asset.get('path', ''))
         name = asset.get('name', '').lower()
         if filename in message or name in message:
             return str(idx), filename
 
+    # 2. Gemini 추론
     asset_list_str = "\n".join([f"- Index {i}: {a.get('name')} (File: {os.path.basename(a.get('path',''))})" for i, a in enumerate(image_assets)])
     
     prompt = f"""
@@ -315,6 +317,35 @@ async def _regenerate_asset_logic(game_name: str, asset_id: str, new_prompt: str
     except Exception as e:
         return False, f"❌ 에러 발생: {str(e)}"
 
+# 🔥 [NEW] 게임 기획자 AI 함수
+async def elaborate_game_concept(user_request: str, model_name: str, client):
+    print(f"🧠 [게임 기획 중] 사용자의 아이디어를 구체화하고 있습니다...")
+    prompt = f"""
+    당신은 세계적인 게임 기획자이자 아트 디렉터입니다.
+    사용자 요청: "{user_request}"
+
+    이 요청을 분석하여 개발자와 아티스트에게 전달할 완벽한 '게임 개발 명세서'를 작성해주세요.
+    사용자가 언급한 게임(예: 쿠키런, 마리오 등)이 있다면 그 게임의 핵심 재미 요소와 비주얼 스타일을 분석해서 반영해야 합니다.
+
+    [필수 포함 내용]
+    1. **게임 개요**: 장르, 핵심 재미 요소.
+    2. **메카닉 정의**: 조작법, 물리 규칙.
+    3. **아트 디렉팅**: 
+       - 전체적인 시각적 테마.
+       - 캐릭터, 배경, 아이템의 구체적인 생김새 묘사.
+    4. **에셋 리스트**: 필요한 이미지 파일명과 각 파일의 상세 묘사.
+    
+    이 명세서는 AI가 코드를 짜고 그림을 그리는 데 직접 사용됩니다.
+    """
+    
+    try:
+        response = client.models.generate_content(model=model_name, contents=prompt)
+        print(f"   📝 기획서 작성 완료")
+        return response.text.strip()
+    except Exception as e:
+        print(f"   ⚠️ 기획서 작성 실패 (원본 요청 사용): {e}")
+        return user_request
+
 # [코드 수정 로직]
 def modify_code(message, question, game_name):
     create_project_structure(GAME_DIR(game_name))
@@ -346,7 +377,7 @@ def modify_code(message, question, game_name):
         json_data = {}
         if not error: json_data = json.loads(game_data_str)
         
-        regen_keywords = ["전부", "모든", "다시", "새로", "초기화"]
+        regen_keywords = ["전부", "모든", "다시", "새로", "초기화", "만들어", "생성"]
         should_force_regen = any(k in message for k in regen_keywords)
         
         if should_force_regen:
@@ -410,13 +441,13 @@ async def process_code(request: CodeRequest):
         with open(style_path, 'w', encoding='utf-8') as f: f.write(style_content)
         return {"status": "success", "reply": f"✅ 스타일 설정 완료: {style_content}"}
 
-    # 🔥 스마트 에셋 변경 감지
+    # 🔥 스마트 에셋 변경 감지 (단일 에셋)
     asset_match = re.search(r'([\w-]+\.png)', message)
     change_keywords = ["바꿔", "변경", "그려", "수정", "change", "생성", "만들어"]
     is_change_request = any(k in message for k in change_keywords)
 
-    # 🚨 [수정] 코드 수정이나 전체 재생성 요청이 포함된 경우, 단일 에셋 변경 로직을 건너뜁니다.
-    is_global_request = any(k in message for k in ["코드", "로직", "전부", "모든", "싹 다", "초기화"])
+    # 🚨 [핵심 수정] '게임', '코드', '전부' 등이 포함되면 단일 에셋 변경이 아닌, 전체 로직 수정으로 간주
+    is_global_request = any(k in message for k in ["게임", "코드", "로직", "전부", "모든", "싹 다", "초기화"])
 
     if is_change_request and not is_global_request:
         asset_id, asset_filename = None, None
@@ -439,8 +470,11 @@ async def process_code(request: CodeRequest):
             save_chat(CHAT_PATH(game_name), "bot", reply)
             return {"status": "success" if success else "fail", "reply": reply}
 
-    # 기본 코드 수정 로직 (단일 에셋 변경이 아니거나, 글로벌 요청인 경우 여기로 옴)
-    prompt = pdp.get_final_prompt(request.message)
+    # 🔥 [기본 흐름] 코드/게임 수정 (기획 -> 코드 -> 에셋)
+    # 기획자 AI를 통해 요청을 구체화한 뒤 진행
+    detailed_prompt = await elaborate_game_concept(message, model_name, gemini_client)
+    
+    prompt = pdp.get_final_prompt(detailed_prompt)
     success = False
     fail_message = ""
     for i in range(3):
@@ -462,9 +496,7 @@ async def process_code(request: CodeRequest):
     
     return {"status": "fail", "reply": fail_message}
 
-# -------------------------------------------------------------------------
-#  [API: 에셋 및 데이터 조회 (404 해결용)]
-# -------------------------------------------------------------------------
+# ... (나머지 에셋 조회 등 API 코드는 동일하므로 생략하지 않고 그대로 유지) ...
 @app.get("/game_data")
 async def get_game_data(game_name: str):
     if os.path.exists(DATA_PATH(game_name)):
@@ -499,9 +531,6 @@ async def get_spec(game_name: str):
         with open(SPEC_PATH(game_name), 'r', encoding='utf-8') as f: spec = f.read()
     return spec
 
-# -------------------------------------------------------------------------
-#  [API: 기타 기능들]
-# -------------------------------------------------------------------------
 @app.post("/spec-question")
 async def spec_question(request: CodeRequest):
     try:        
@@ -666,7 +695,6 @@ async def replace_asset(
     finally:
         try: tmp_path.unlink(missing_ok=True)
         except: pass
-                 
     return JSONResponse({"status": "success", "url": f"/static/{game_name}/assets/{new_name}"})
 
 @app.post("/regenerate-asset")
